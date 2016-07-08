@@ -42,7 +42,9 @@ import com.esotericsoftware.kryo.io.Output;
  * <code>@Tag</code> annotation must remain in the class. Deprecated fields can optionally be made private and/or renamed so they
  * don't clutter the class (eg, <code>ignored</code>, <code>ignored2</code>). For these reasons, TaggedFieldSerializer generally
  * provides more flexibility for classes to evolve. The downside is that it has a small amount of additional overhead compared to
- * VersionFieldSerializer (an additional varint per field). Forward compatibility is not supported.
+ * VersionFieldSerializer (an additional varint per field). Forward compatibility is supported only if
+ * {@link #setIgnoreUnknownTags(boolean)} is set to true.
+ * <p>Tag values must be entirely unique, even among a class and its superclass(es).
  * @see VersionFieldSerializer
  * @author Nathan Sweet <misc@n4te.com> */
 public class TaggedFieldSerializer<T> extends FieldSerializer<T> {
@@ -56,10 +58,7 @@ public class TaggedFieldSerializer<T> extends FieldSerializer<T> {
 
 	/** Tells Kryo, if should ignore unknown field tags when using TaggedFieldSerializer. Already existing serializer instances
 	 * are not affected by this setting.
-	 *
-	 * <p>
-	 * By default, Kryo will throw KryoException if encounters unknown field tags.
-	 * </p>
+	 * <p> By default, Kryo will throw KryoException if it encounters unknown field tags.
 	 *
 	 * @param ignoreUnknownTags if true, unknown field tags will be ignored. Otherwise KryoException will be thrown */
 	public void setIgnoreUnknownTags (boolean ignoreUnknownTags) {
@@ -96,6 +95,8 @@ public class TaggedFieldSerializer<T> extends FieldSerializer<T> {
 		for (int i = 0, n = fields.length; i < n; i++) {
 			Field field = fields[i].getField();
 			tags[i] = field.getAnnotation(Tag.class).value();
+			if (i > 0 && tags[i] == tags[i-1]) //check relies on fields being sorted
+				throw new KryoException(String.format("The fields [%s] and [%s] both have a tag value of %d.", field, fields[i-1].getField(), tags[i]));
 			if (field.getAnnotation(Deprecated.class) != null) {
 				deprecated[i] = true;
 				writeFieldCount--;
