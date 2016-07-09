@@ -49,7 +49,6 @@ import com.esotericsoftware.kryo.serializers.DefaultSerializers.URLSerializer;
 import com.esotericsoftware.kryo.serializers.FieldSerializerConfig;
 import com.esotericsoftware.kryo.serializers.OptionalSerializers;
 import com.esotericsoftware.kryo.serializers.GenericsResolver;
-import com.esotericsoftware.kryo.serializers.TaggedFieldSerializerConfig;
 import com.esotericsoftware.kryo.serializers.TimeSerializers;
 import org.objenesis.instantiator.ObjectInstantiator;
 import org.objenesis.strategy.InstantiatorStrategy;
@@ -151,7 +150,6 @@ public class Kryo {
 	private GenericsResolver genericsResolver = new GenericsResolver();
 
 	private FieldSerializerConfig fieldSerializerConfig = new FieldSerializerConfig();
-	private TaggedFieldSerializerConfig taggedFieldSerializerConfig = new TaggedFieldSerializerConfig();
 
 	private StreamFactory streamFactory;
 
@@ -1066,10 +1064,6 @@ public class Kryo {
 	 * the configuration for a single {@link FieldSerializer}. */
 	public FieldSerializerConfig getFieldSerializerConfig() {
 		return fieldSerializerConfig;
-	}
-
-	public TaggedFieldSerializerConfig getTaggedFieldSerializerConfig() {
-		return taggedFieldSerializerConfig;
 	}
 
 	/** Sets the reference resolver and enables references. */

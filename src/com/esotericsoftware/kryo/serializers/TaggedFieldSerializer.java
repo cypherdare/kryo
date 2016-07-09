@@ -19,8 +19,7 @@
 
 package com.esotericsoftware.kryo.serializers;
 
-import static com.esotericsoftware.minlog.Log.TRACE;
-import static com.esotericsoftware.minlog.Log.trace;
+import static com.esotericsoftware.minlog.Log.*;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -33,7 +32,9 @@ import java.util.Comparator;
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.KryoException;
 import com.esotericsoftware.kryo.io.Input;
+import com.esotericsoftware.kryo.io.InputChunked;
 import com.esotericsoftware.kryo.io.Output;
+import com.esotericsoftware.kryo.io.OutputChunked;
 
 /** Serializes objects using direct field assignment for fields that have a <code>@Tag(int)</code> annotation. This provides
  * backward compatibility so new fields can be added. TaggedFieldSerializer has two advantages over {@link VersionFieldSerializer}
@@ -42,32 +43,21 @@ import com.esotericsoftware.kryo.io.Output;
  * <code>@Tag</code> annotation must remain in the class. Deprecated fields can optionally be made private and/or renamed so they
  * don't clutter the class (eg, <code>ignored</code>, <code>ignored2</code>). For these reasons, TaggedFieldSerializer generally
  * provides more flexibility for classes to evolve. The downside is that it has a small amount of additional overhead compared to
- * VersionFieldSerializer (an additional varint per field). Forward compatibility is supported only if
- * {@link #setIgnoreUnknownTags(boolean)} is set to true.
+ * VersionFieldSerializer (an additional varint per field).
  * <p>Tag values must be entirely unique, even among a class and its superclass(es).
+ * <p>Forward compatibility is optionally supported only if all new tagged fields are also marked {@code @Late}. This comes
+ * with the overhead of chunked encoding. Any class that has late fields will cause a buffer for chunked encoding to be allocated
+ * during reading and writing. Chunked encoding is used only for the late fields.
  * @see VersionFieldSerializer
  * @author Nathan Sweet <misc@n4te.com> */
 public class TaggedFieldSerializer<T> extends FieldSerializer<T> {
 	private int[] tags;
 	private int writeFieldCount;
 	private boolean[] deprecated;
+	private boolean[] late;
 
 	public TaggedFieldSerializer (Kryo kryo, Class type) {
-		super(kryo, type, null, kryo.getTaggedFieldSerializerConfig().clone());
-	}
-
-	/** Tells Kryo, if should ignore unknown field tags when using TaggedFieldSerializer. Already existing serializer instances
-	 * are not affected by this setting.
-	 * <p> By default, Kryo will throw KryoException if it encounters unknown field tags.
-	 *
-	 * @param ignoreUnknownTags if true, unknown field tags will be ignored. Otherwise KryoException will be thrown */
-	public void setIgnoreUnknownTags (boolean ignoreUnknownTags) {
-		((TaggedFieldSerializerConfig) config).setIgnoreUnknownTags(ignoreUnknownTags);
-		rebuildCachedFields();
-	}
-
-	public boolean isIgnoreUnkownTags() {
-		return ((TaggedFieldSerializerConfig) config).isIgnoreUnknownTags();
+		super(kryo, type);
 	}
 
 	protected void initializeCachedFields () {
@@ -84,22 +74,22 @@ public class TaggedFieldSerializer<T> extends FieldSerializer<T> {
 		fields = getFields();
 		tags = new int[fields.length];
 		deprecated = new boolean[fields.length];
+		late = new boolean[fields.length];
 		writeFieldCount = fields.length;
 
-		// fields are sorted to ensure write order: tag 0, tag 1, ... , tag N
-		Arrays.sort(fields, new Comparator<CachedField>() {
-			public int compare(CachedField o1, CachedField o2) {
-				return o1.getField().getAnnotation(Tag.class).value() - o2.getField().getAnnotation(Tag.class).value();
-			}
-		});
+		Arrays.sort(fields, tagComparator); //sort to allow easy check for reused tag values
 		for (int i = 0, n = fields.length; i < n; i++) {
 			Field field = fields[i].getField();
 			tags[i] = field.getAnnotation(Tag.class).value();
 			if (i > 0 && tags[i] == tags[i-1]) //check relies on fields being sorted
-				throw new KryoException(String.format("The fields [%s] and [%s] both have a tag value of %d.", field, fields[i-1].getField(), tags[i]));
+				throw new KryoException(String.format("The fields [%s] and [%s] both have a tag value of %d.",
+						field, fields[i-1].getField(), tags[i]));
 			if (field.getAnnotation(Deprecated.class) != null) {
 				deprecated[i] = true;
 				writeFieldCount--;
+			}
+			if (field.getAnnotation(Late.class) != null) {
+				late[i] = true;
 			}
 		}
 
@@ -119,10 +109,19 @@ public class TaggedFieldSerializer<T> extends FieldSerializer<T> {
 	public void write (Kryo kryo, Output output, T object) {
 		CachedField[] fields = getFields();
 		output.writeVarInt(writeFieldCount, true); // Can be used for null.
+
+		OutputChunked outputChunked = null;
 		for (int i = 0, n = fields.length; i < n; i++) {
 			if (deprecated[i]) continue;
 			output.writeVarInt(tags[i], true);
-			fields[i].write(output, object);
+			if (late[i]){
+				if (outputChunked == null)
+					outputChunked = new OutputChunked(output, 1024);
+				fields[i].write(outputChunked, object);
+				outputChunked.endChunks();
+			} else {
+				fields[i].write(output, object);
+			}
 		}
 	}
 
@@ -131,19 +130,31 @@ public class TaggedFieldSerializer<T> extends FieldSerializer<T> {
 		kryo.reference(object);
 		int fieldCount = input.readVarInt(true);
 		int[] tags = this.tags;
+		boolean[] late = this.late;
+		InputChunked inputChunked = null;
 		CachedField[] fields = getFields();
 		for (int i = 0, n = fieldCount; i < n; i++) {
 			int tag = input.readVarInt(true);
 
 			CachedField cachedField = null;
+			boolean isLate = false;
 			for (int ii = 0, nn = tags.length; ii < nn; ii++) {
 				if (tags[ii] == tag) {
 					cachedField = fields[ii];
+					isLate = late[ii];
 					break;
 				}
 			}
-			if (cachedField == null) {
-				if (!isIgnoreUnkownTags()) throw new KryoException("Unknown field tag: " + tag + " (" + getType().getName() + ")");
+			if (isLate || cachedField == null) {
+				if (inputChunked == null)
+					inputChunked = new InputChunked(input, 1024);
+				if (cachedField != null){
+					cachedField.read(inputChunked, object);
+				} else if (DEBUG){
+					debug(String.format("Unknown field tag: %d (%s) encountered. Assuming chunked encoding and skipping.",
+							tag, getType().getName()));
+				}
+				inputChunked.nextChunks();
 			} else {
 				cachedField.read(input, object);
 			}
@@ -151,10 +162,24 @@ public class TaggedFieldSerializer<T> extends FieldSerializer<T> {
 		return object;
 	}
 
-	/** If true, this field will not be serialized. */
+	/**Assumes CachedFields have tags. */
+	private static final Comparator<CachedField> tagComparator = new Comparator<CachedField>() {
+		public int compare(CachedField o1, CachedField o2) {
+			return o1.getField().getAnnotation(Tag.class).value() - o2.getField().getAnnotation(Tag.class).value();
+		}
+	};
+
+	/** Only fields with tags assigned are serialized by TaggedFieldSerializers. No two fields may have the same tag value,
+	 * including superclasses.*/
 	@Retention(RetentionPolicy.RUNTIME)
 	@Target(ElementType.FIELD)
 	public @interface Tag {
 		int value();
 	}
+
+	/** A class is forward compatible with TaggedFieldSerializer if all new {@link Tag Tagged} fields are also marked Late. */
+	@Retention(RetentionPolicy.RUNTIME)
+	@Target(ElementType.FIELD)
+	public @interface Late {}
+
 }
