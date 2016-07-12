@@ -45,9 +45,11 @@ import com.esotericsoftware.kryo.io.OutputChunked;
  * provides more flexibility for classes to evolve. The downside is that it has a small amount of additional overhead compared to
  * VersionFieldSerializer (an additional varint per field).
  * <p>Tag values must be entirely unique, even among a class and its superclass(es).
- * <p>Forward compatibility is optionally supported only if all new tagged fields are also marked {@code @Late}. This comes
- * with the overhead of chunked encoding. Any class that has late fields will cause a buffer for chunked encoding to be allocated
- * during reading and writing. Chunked encoding is used only for the late fields.
+ * <p>Forward compatibility is optionally supported only if all new tagged fields after the first forward compatible version of
+ * an application are also marked {@code @Late}. This comes with the overhead of chunked encoding for the late fields only. Any
+ * class that has late fields will cause a buffer for chunked encoding to be allocated during reading and writing. Forward
+ * compatible reading can be turned off with {@link FieldSerializerConfig#setForwardCompatibleTaggedFields(boolean)} to follow
+ * the legacy behavior of throwing a {@link KryoException} when unknown tagged fields are encountered.
  * @see VersionFieldSerializer
  * @author Nathan Sweet <misc@n4te.com> */
 public class TaggedFieldSerializer<T> extends FieldSerializer<T> {
@@ -131,6 +133,7 @@ public class TaggedFieldSerializer<T> extends FieldSerializer<T> {
 		int fieldCount = input.readVarInt(true);
 		int[] tags = this.tags;
 		boolean[] late = this.late;
+		final boolean forwardCompatible = config.isForwardCompatibleTaggedFields();
 		InputChunked inputChunked = null;
 		CachedField[] fields = getFields();
 		for (int i = 0, n = fieldCount; i < n; i++) {
@@ -138,20 +141,29 @@ public class TaggedFieldSerializer<T> extends FieldSerializer<T> {
 
 			CachedField cachedField = null;
 			boolean isLate = false;
-			for (int ii = 0, nn = tags.length; ii < nn; ii++) {
-				if (tags[ii] == tag) {
-					cachedField = fields[ii];
-					isLate = late[ii];
-					break;
+			if (i < tags.length && tags[i] == tag){ //can skip search if written fields are sorted and tags are consecutive
+				cachedField = fields[i];
+				isLate = late[i];
+			} else {
+				for (int ii = 0, nn = tags.length; ii < nn; ii++) {
+					if (tags[ii] == tag) {
+						cachedField = fields[ii];
+						isLate = late[ii];
+						break;
+					}
 				}
 			}
+
+			if (!forwardCompatible && cachedField == null)
+				throw new KryoException(String.format("Unknown field tag: %d (%s) encountered.", tag, getType().getName()));
+
 			if (isLate || cachedField == null) {
 				if (inputChunked == null)
 					inputChunked = new InputChunked(input, 1024);
 				if (cachedField != null){
 					cachedField.read(inputChunked, object);
-				} else if (DEBUG){
-					debug(String.format("Unknown field tag: %d (%s) encountered. Assuming chunked encoding and skipping.",
+				} else if (TRACE) {
+					trace(String.format("Unknown field tag: %d (%s) encountered. Assuming chunked encoding and skipping.",
 							tag, getType().getName()));
 				}
 				inputChunked.nextChunks();

@@ -20,6 +20,7 @@
 package com.esotericsoftware.kryo.serializers;
 
 import com.esotericsoftware.kryo.Kryo;
+import com.esotericsoftware.kryo.io.Input;
 
 import static com.esotericsoftware.minlog.Log.TRACE;
 import static com.esotericsoftware.minlog.Log.trace;
@@ -37,6 +38,7 @@ public class FieldSerializerConfig implements Cloneable {
     private boolean copyTransient = true;
     /** If set, transient fields will be serialized */
     private boolean serializeTransient = false;
+    private boolean forwardCompatibleTaggedFields = true;
 
     {
         useAsm = !FieldSerializer.unsafeAvailable;
@@ -109,6 +111,15 @@ public class FieldSerializerConfig implements Cloneable {
         this.serializeTransient = serializeTransient;
     }
 
+    /** If false, {@link TaggedFieldSerializer#read(Kryo, Input, Class) TaggedFieldSerializer.read()} will throw a
+     * {@link com.esotericsoftware.kryo.KryoException KryoException} when encountering unknown tags (legacy behavior)
+     * rather than assuming a future {@link TaggedFieldSerializer.Late @Late} tagged field. This setting does not affect
+     * write behavior--fields marked Late will still use chunked encoding and can still be read by current and later
+     * versions. This setting applies only to TaggedFieldSerializer. */
+    public void setForwardCompatibleTaggedFields (boolean forwardCompatible){
+        this.forwardCompatibleTaggedFields = forwardCompatible;
+    }
+
     public boolean isFieldsCanBeNull() {
         return fieldsCanBeNull;
     }
@@ -135,5 +146,9 @@ public class FieldSerializerConfig implements Cloneable {
 
     public boolean isSerializeTransient() {
         return serializeTransient;
+    }
+
+    public boolean isForwardCompatibleTaggedFields() {
+        return forwardCompatibleTaggedFields;
     }
 }
